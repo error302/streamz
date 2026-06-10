@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 15 15 19;
+    --foreground: 255 255 255;
+  }
+
+  * {
+    @apply border-surface-300;
+  }
+
+  body {
+    @apply bg-surface text-white;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-brand-400 via-brand-500 to-accent-twitch;
+  }
+
+  .glass {
+    @apply bg-surface-100/60 backdrop-blur-xl border border-surface-300/50;
+  }
+
+  .glow-brand {
+    box-shadow: 0 0 20px rgba(236, 72, 153, 0.15), 0 0 60px rgba(236, 72, 153, 0.05);
+  }
+}

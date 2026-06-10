@@ -1,0 +1,9 @@
+[
+  {
+    "AllowedOrigins": ["https://streamz.app", "https://*.streamz.app", "http://localhost:3000"],
+    "AllowedMethods": ["GET", "PUT", "POST", "DELETE", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag", "Content-Length", "Content-Type"],
+    "MaxAgeSeconds": 3600
+  }
+]
