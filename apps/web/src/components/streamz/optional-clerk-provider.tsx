@@ -28,7 +28,7 @@ export function OptionalClerkProvider({ children }: { children: React.ReactNode 
   }
 
   // Dynamically import ClerkProvider to avoid errors when keys are missing
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // eslint-disable-next-line
   const { ClerkProvider } = require('@clerk/nextjs');
 
   return <ClerkProvider>{children}</ClerkProvider>;

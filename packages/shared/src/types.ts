@@ -252,3 +252,43 @@ export interface OptimizerFeedback {
   worstPerformingVariant?: string;
   recommendedModifications: string[];
 }
+
+// ============================================
+// Phase 4: Prompt Refinement & Highlight V2 Types
+// ============================================
+
+/** Feedback recorded when AI content is approved or rejected */
+export interface PromptFeedback {
+  promptVersion: string;
+  platform: TargetPlatform;
+  approved: boolean;
+  rejectionReason?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** Scene change detected via FFmpeg scene detection filter */
+export interface SceneChangeData {
+  timestamp: number;
+  score: number; // scene change intensity 0-1
+}
+
+/** Scene change cluster (nearby scene changes grouped) */
+export interface SceneCluster {
+  startTime: number;
+  endTime: number;
+  changeCount: number;
+  maxScore: number;
+}
+
+/** Extended highlight with scene change score (Phase 4 v2) */
+export interface HighlightV2 extends Highlight {
+  sceneChangeScore: number;
+}
+
+/** Worker health metrics for monitoring */
+export interface WorkerHealthMetrics {
+  jobsProcessed: number;
+  jobsFailed: number;
+  avgProcessingTimeMs: number;
+  uptime: number;
+}

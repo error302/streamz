@@ -9,3 +9,4 @@ export * from './queue.js';
 export * from './publisher-errors.js';
 export * from './logger.js';
 export * from './health-server.js';
+export * from './error-tracker.js';

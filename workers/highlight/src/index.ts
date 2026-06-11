@@ -6,7 +6,8 @@
 // 1. Downloads VOD + chat from R2
 // 2. Runs chat analyzer
 // 3. Runs audio analyzer
-// 4. Merges results with 60/40 weighting (chat/audio)
+// 3.5. Runs scene change detection (Phase 4 v2)
+// 4. Merges results with 50/30/20 weighting (chat/audio/scene) — Phase 4 v2
 // 5. Sorts by combined score
 // 6. Takes top 5-10 highlights
 // 7. Extracts clips via FFmpeg
@@ -19,6 +20,7 @@ import {
   QUEUES,
   RETRY_CONFIG,
   HIGHLIGHT_THRESHOLDS,
+  HIGHLIGHT_V2_WEIGHTS,
   CLIP_DURATION,
   type HighlightJobPayload,
   HighlightJobPayloadSchema,
@@ -31,6 +33,7 @@ import { sql, updateStreamStatus, findStreamById, insertHighlight } from '@strea
 import { analyzeChat, type ChatSpike } from './chat-analyzer.js';
 import { analyzeAudio, type AudioEnergySegment } from './audio-analyzer.js';
 import { extractClips, type HighlightCandidate } from './clip-extractor.js';
+import { detectSceneChanges, clusterSceneChanges, getSceneScoreForRange, type SceneChange, type SceneCluster } from './scene-detector.js';
 
 // ---- Redis Connection ----
 const redisConfig = {
@@ -43,9 +46,10 @@ const redisConfig = {
 // ---- Optimize Queue ----
 const optimizeQueue = getQueue(QUEUES.OPTIMIZE);
 
-// ---- Weighting Constants ----
-const CHAT_WEIGHT = 0.6;
-const AUDIO_WEIGHT = 0.4;
+// ---- Weighting Constants (Phase 4 v2: Chat 50%, Audio 30%, Scene 20%) ----
+const CHAT_WEIGHT = HIGHLIGHT_V2_WEIGHTS.CHAT;
+const AUDIO_WEIGHT = HIGHLIGHT_V2_WEIGHTS.AUDIO;
+const SCENE_WEIGHT = HIGHLIGHT_V2_WEIGHTS.SCENE;
 const MAX_HIGHLIGHTS = 10;
 const MIN_HIGHLIGHTS = 5;
 
@@ -70,6 +74,7 @@ interface MergedHighlight {
   highlightScore: number;
   chatSpikeIntensity: number;
   audioEnergyScore: number;
+  sceneChangeScore: number;
   clipType: ClipType;
   clipR2Key: string;
 }
@@ -113,11 +118,38 @@ async function processHighlightJob(job: Job<HighlightJobPayload>) {
     const audioHighlights: AudioHighlight[] = await analyzeAudio(payload.vodR2Key, job);
 
     console.log(`[Highlight Worker] Audio analysis complete: ${audioHighlights.length} peaks found`);
+    await job.updateProgress(45);
+
+    // ---- Step 2.5: Scene Change Detection (Phase 4 v2) ----
+    let sceneChanges: SceneChange[] = [];
+    let sceneClusters: SceneCluster[] = [];
+
+    try {
+      console.log(`[Highlight Worker] Running scene change detection for stream ${payload.streamId}`);
+      // Scene detection requires the local VOD path — use the same temp path pattern as audio analyzer
+      // The audio analyzer downloads the VOD, so we reuse the same file
+      const vodLocalPath = `/tmp/streamz_vod_${payload.streamId}.mp4`;
+      sceneChanges = await detectSceneChanges(vodLocalPath);
+      sceneClusters = clusterSceneChanges(sceneChanges);
+      console.log(
+        `[Highlight Worker] Scene detection complete: ${sceneChanges.length} changes, ` +
+        `${sceneClusters.length} clusters`
+      );
+    } catch (sceneErr) {
+      // Scene detection is non-fatal — continue with chat + audio only
+      console.warn(
+        `[Highlight Worker] Scene detection failed (non-fatal, falling back to chat+audio only): ${sceneErr}`
+      );
+    }
+
     await job.updateProgress(55);
 
-    // ---- Step 3: Merge & Score Highlights ----
-    console.log(`[Highlight Worker] Merging ${chatHighlights.length} chat + ${audioHighlights.length} audio highlights`);
-    const mergedHighlights = mergeHighlights(chatHighlights, audioHighlights);
+    // ---- Step 3: Merge & Score Highlights (Phase 4 v2: 50/30/20 weighting) ----
+    console.log(
+      `[Highlight Worker] Merging ${chatHighlights.length} chat + ${audioHighlights.length} audio + ` +
+      `${sceneClusters.length} scene highlights (weights: chat=${CHAT_WEIGHT}, audio=${AUDIO_WEIGHT}, scene=${SCENE_WEIGHT})`
+    );
+    const mergedHighlights = mergeHighlights(chatHighlights, audioHighlights, sceneClusters);
 
     // Filter by score threshold
     const scoredHighlights = mergedHighlights.filter(
@@ -157,6 +189,7 @@ async function processHighlightJob(job: Job<HighlightJobPayload>) {
       highlightScore: h.highlightScore,
       chatSpikeIntensity: h.chatSpikeIntensity,
       audioEnergyScore: h.audioEnergyScore,
+      sceneChangeScore: h.sceneChangeScore,
       clipType: h.clipType,
       clipR2Key: h.clipR2Key,
     }));
@@ -185,16 +218,17 @@ async function processHighlightJob(job: Job<HighlightJobPayload>) {
         });
 
         if (dbHighlight) {
-          // Update the highlight record with the clip R2 key
+          // Update the highlight record with the clip R2 key and scene change score
           await sql`
             UPDATE highlights
-            SET clip_r2_key = ${highlight.clipR2Key}
+            SET clip_r2_key = ${highlight.clipR2Key},
+                scene_change_score = ${highlight.sceneChangeScore ?? 0}
             WHERE id = ${dbHighlight.id}
           `;
 
           console.log(
             `[Highlight Worker] Created highlight record: ${dbHighlight.id} ` +
-            `(score=${highlight.highlightScore.toFixed(2)}, type=${highlight.clipType})`
+            `(score=${highlight.highlightScore.toFixed(2)}, scene=${(highlight.sceneChangeScore ?? 0).toFixed(2)}, type=${highlight.clipType})`
           );
 
           // ---- Step 6: Enqueue optimize job for each highlight ----
@@ -284,12 +318,14 @@ function determineTargetPlatforms(clipType: ClipType): TargetPlatform[] {
   }
 }
 
-// ---- Highlight Merging Algorithm ----
-// Merges chat spikes and audio energy peaks using 60/40 weighting.
+// ---- Highlight Merging Algorithm (Phase 4 v2) ----
+// Merges chat spikes, audio energy peaks, and scene changes
+// using 50/30/20 weighting (chat/audio/scene).
 // Overlapping segments are combined, with expanded time ranges.
 function mergeHighlights(
   chatHighlights: ChatHighlight[],
-  audioHighlights: AudioHighlight[]
+  audioHighlights: AudioHighlight[],
+  sceneClusters: SceneCluster[]
 ): MergedHighlight[] {
   const highlights: MergedHighlight[] = [];
 
@@ -306,6 +342,13 @@ function mergeHighlights(
       ? Math.max(...overlappingAudio.map((ah) => ah.energyScore))
       : 0;
 
+    // Calculate scene change score for this time range
+    const sceneScore = getSceneScoreForRange(
+      sceneClusters,
+      chatHl.startTime,
+      chatHl.endTime
+    );
+
     // Expand time range to include overlapping audio segments
     let startTime = chatHl.startTime;
     let endTime = chatHl.endTime;
@@ -315,10 +358,21 @@ function mergeHighlights(
       endTime = Math.max(endTime, audioHl.endTime);
     }
 
-    // Combined score: 60% chat + 40% audio
+    // Also expand to include overlapping scene clusters
+    const overlappingScenes = sceneClusters.filter(
+      (sc) => sc.startTime <= chatHl.endTime && sc.endTime >= chatHl.startTime
+    );
+    for (const sceneCl of overlappingScenes) {
+      startTime = Math.min(startTime, sceneCl.startTime);
+      endTime = Math.max(endTime, sceneCl.endTime);
+    }
+
+    // Combined score: 50% chat + 30% audio + 20% scene (Phase 4 v2)
     const highlightScore = Math.min(
       1,
-      chatHl.spikeIntensity * CHAT_WEIGHT + maxAudioScore * AUDIO_WEIGHT
+      chatHl.spikeIntensity * CHAT_WEIGHT +
+      maxAudioScore * AUDIO_WEIGHT +
+      sceneScore * SCENE_WEIGHT
     );
 
     // Determine clip type based on duration
@@ -330,6 +384,7 @@ function mergeHighlights(
       highlightScore,
       chatSpikeIntensity: chatHl.spikeIntensity,
       audioEnergyScore: maxAudioScore,
+      sceneChangeScore: sceneScore,
       clipType,
       clipR2Key: '', // Will be set by clip extractor
     });
@@ -345,12 +400,47 @@ function mergeHighlights(
       const duration = audioHl.endTime - audioHl.startTime;
       const clipType = determineClipType(duration);
 
+      // Calculate scene score for audio-only highlights too
+      const sceneScore = getSceneScoreForRange(
+        sceneClusters,
+        audioHl.startTime,
+        audioHl.endTime
+      );
+
+      // Audio-only: 50% chat (0) + 30% audio + 20% scene
       highlights.push({
         startTime: audioHl.startTime,
         endTime: audioHl.endTime,
-        highlightScore: Math.min(1, audioHl.energyScore * AUDIO_WEIGHT), // Lower score for audio-only
+        highlightScore: Math.min(1, audioHl.energyScore * AUDIO_WEIGHT + sceneScore * SCENE_WEIGHT),
         chatSpikeIntensity: 0,
         audioEnergyScore: audioHl.energyScore,
+        sceneChangeScore: sceneScore,
+        clipType,
+        clipR2Key: '',
+      });
+    }
+  }
+
+  // ---- Process scene-only highlights (not covered by chat or audio) ----
+  for (const sceneCl of sceneClusters) {
+    const hasChatOverlap = chatHighlights.some(
+      (ch) => ch.startTime <= sceneCl.endTime && ch.endTime >= sceneCl.startTime
+    );
+    const hasAudioOverlap = audioHighlights.some(
+      (ah) => ah.startTime <= sceneCl.endTime && ah.endTime >= sceneCl.startTime
+    );
+
+    if (!hasChatOverlap && !hasAudioOverlap && sceneCl.maxScore >= 0.5) {
+      const clipType = determineClipType(sceneCl.endTime - sceneCl.startTime);
+
+      // Scene-only: lower weight, but still significant
+      highlights.push({
+        startTime: sceneCl.startTime,
+        endTime: sceneCl.endTime,
+        highlightScore: Math.min(1, sceneCl.maxScore * SCENE_WEIGHT * 1.5), // Boost slightly for standalone
+        chatSpikeIntensity: 0,
+        audioEnergyScore: 0,
+        sceneChangeScore: sceneCl.maxScore,
         clipType,
         clipR2Key: '',
       });
@@ -403,6 +493,9 @@ worker.on('stalled', (jobId) => {
 });
 
 console.log('[Highlight Worker] Started, listening on queue:', QUEUES.HIGHLIGHT);
+console.log(
+  `[Highlight Worker] Scoring weights: chat=${CHAT_WEIGHT}, audio=${AUDIO_WEIGHT}, scene=${SCENE_WEIGHT}`
+);
 
 // ---- Graceful Shutdown ----
 let isShuttingDown = false;

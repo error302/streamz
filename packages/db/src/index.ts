@@ -103,14 +103,15 @@ export async function insertHighlight(data: {
   audioEnergyScore: number;
   clipDuration: number;
   clipType: string;
+  sceneChangeScore?: number;
 }) {
   const [highlight] = await sql`
     INSERT INTO highlights (
       stream_id, start_time, end_time, highlight_score,
-      chat_spike_intensity, audio_energy_score, clip_duration, clip_type
+      chat_spike_intensity, audio_energy_score, clip_duration, clip_type, scene_change_score
     ) VALUES (
       ${data.streamId}, ${data.startTime}, ${data.endTime}, ${data.highlightScore},
-      ${data.chatSpikeIntensity}, ${data.audioEnergyScore}, ${data.clipDuration}, ${data.clipType}::clip_type
+      ${data.chatSpikeIntensity}, ${data.audioEnergyScore}, ${data.clipDuration}, ${data.clipType}::clip_type, ${data.sceneChangeScore ?? 0}
     )
     RETURNING *
   `;
@@ -127,14 +128,18 @@ export async function insertAIContent(data: {
   suggestedPostTime: Date | null;
   promptVersion: string;
   originalContent: Record<string, unknown> | null;
+  rejectionReason?: string | null;
+  approvalFeedback?: Record<string, unknown> | null;
 }) {
   const [content] = await sql`
     INSERT INTO ai_content (
       highlight_id, target_platform, title, description,
-      tags, hashtags, suggested_post_time, prompt_version, original_content
+      tags, hashtags, suggested_post_time, prompt_version, original_content,
+      rejection_reason, approval_feedback
     ) VALUES (
       ${data.highlightId}, ${data.targetPlatform}::target_platform, ${data.title}, ${data.description},
-      ${data.tags}, ${data.hashtags}, ${data.suggestedPostTime}, ${data.promptVersion}, ${data.originalContent ? sql.json(data.originalContent as any) : null}
+      ${data.tags}, ${data.hashtags}, ${data.suggestedPostTime}, ${data.promptVersion}, ${data.originalContent ? sql.json(data.originalContent as any) : null},
+      ${data.rejectionReason ?? null}, ${data.approvalFeedback ? sql.json(data.approvalFeedback as any) : null}
     )
     RETURNING *
   `;
@@ -336,6 +341,56 @@ export async function deleteConnectedAccount(userId: string, platform: string) {
 }
 
 // ---- Stats Helpers ----
+
+// ---- Prompt Feedback Helpers (Phase 4) ----
+
+export async function insertPromptFeedback(data: {
+  promptVersion: string;
+  platform: string;
+  approved: boolean;
+  rejectionReason?: string | null;
+  metadata?: Record<string, unknown> | null;
+}) {
+  const [feedback] = await sql`
+    INSERT INTO prompt_feedback (prompt_version, platform, approved, rejection_reason, metadata)
+    VALUES (
+      ${data.promptVersion},
+      ${data.platform}::target_platform,
+      ${data.approved},
+      ${data.rejectionReason ?? null},
+      ${sql.json(data.metadata as any ?? {})}
+    )
+    RETURNING *
+  `;
+  return feedback;
+}
+
+export async function getPromptFeedbackStats(platform?: string, promptVersion?: string) {
+  const whereClause = platform
+    ? promptVersion
+      ? sql`WHERE platform = ${platform}::target_platform AND prompt_version = ${promptVersion}`
+      : sql`WHERE platform = ${platform}::target_platform`
+    : promptVersion
+      ? sql`WHERE prompt_version = ${promptVersion}`
+      : sql``;
+
+  return sql`
+    SELECT
+      prompt_version,
+      platform,
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE approved = true)::int AS approved_count,
+      COUNT(*) FILTER (WHERE approved = false)::int AS rejected_count,
+      ROUND(
+        COUNT(*) FILTER (WHERE approved = true)::numeric / NULLIF(COUNT(*), 0) * 100,
+        2
+      ) AS approval_rate
+    FROM prompt_feedback
+    ${whereClause}
+    GROUP BY prompt_version, platform
+    ORDER BY prompt_version DESC, platform
+  `;
+}
 
 export async function getDashboardStats() {
   const [streamCount] = await sql`

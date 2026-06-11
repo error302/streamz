@@ -85,10 +85,27 @@ export const RETRY_CONFIG = {
 // ---- AI Model Configuration ----
 export const AI_CONFIG = {
   DEFAULT_MODEL: 'anthropic/claude-sonnet-4-20250514',
-  PROMPT_VERSION: '1.0.0',
+  PROMPT_VERSION: '2.0.0',
   MAX_TOKENS: 4096,
   TEMPERATURE: 0.7,
+  VERSION_HISTORY: [
+    { version: '1.0.0', releaseDate: '2024-01-01', description: 'Initial prompt version' },
+    { version: '2.0.0', releaseDate: '2025-01-01', description: 'Refined prompts with SEO/hooks/engagement improvements' },
+  ] as const,
 } as const;
+
+// ---- Highlight V2 Scoring Weights (Phase 4) ----
+export const HIGHLIGHT_V2_WEIGHTS = {
+  CHAT: 0.5,
+  AUDIO: 0.3,
+  SCENE: 0.2,
+} as const;
+
+// ---- Scene Detection Configuration (Phase 4) ----
+export const SCENE_DETECTION_THRESHOLD = 0.3;
+
+// ---- Log Level Configuration ----
+export const LOG_LEVEL = (process.env.LOG_LEVEL?.toLowerCase() as string) || undefined;
 
 // ---- Default Port Config ----
 export const PORTS = {

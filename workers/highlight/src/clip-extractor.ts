@@ -14,6 +14,7 @@ import type { Job } from 'bullmq';
 import type { HighlightJobPayload, ClipType } from '@streamz/shared';
 import { R2_PATHS, CLIP_DURATION, PLATFORM_SPECS } from '@streamz/shared';
 import { uploadFile, downloadToPath as downloadFileToPath } from './storage.js';
+import type { SceneChange } from './scene-detector.js';
 
 // ---- Types ----
 
@@ -23,6 +24,7 @@ export interface HighlightCandidate {
   highlightScore: number;
   chatSpikeIntensity: number;
   audioEnergyScore: number;
+  sceneChangeScore?: number;
   clipType: ClipType;
   clipR2Key: string;
 }
@@ -180,6 +182,80 @@ async function generateThumbnail(
   } catch (err) {
     console.warn(`[Clip Extractor] Thumbnail generation failed (non-fatal): ${err}`);
   }
+}
+
+// ---- Smart Clip Boundary Adjustment (Phase 4) ----
+// Adjusts clip boundaries to snap to the nearest scene change,
+// avoiding cutting mid-action. This results in more natural-looking
+// clips that start/end at meaningful visual transitions.
+
+export function adjustBoundariesToSceneChanges(
+  startTime: number,
+  endTime: number,
+  sceneChanges: SceneChange[],
+  paddingSeconds: number = 3
+): { startTime: number; endTime: number } {
+  if (sceneChanges.length === 0) {
+    return { startTime, endTime };
+  }
+
+  let adjustedStart = startTime;
+  let adjustedEnd = endTime;
+
+  // Find the nearest scene change before or at the start time (within padding)
+  let bestStart: SceneChange | null = null;
+  let bestStartDist = Infinity;
+
+  for (const sc of sceneChanges) {
+    // Scene change should be at or before the start time, but within padding
+    if (sc.timestamp <= startTime && (startTime - sc.timestamp) <= paddingSeconds) {
+      const dist = startTime - sc.timestamp;
+      if (dist < bestStartDist) {
+        bestStartDist = dist;
+        bestStart = sc;
+      }
+    }
+  }
+
+  // Find the nearest scene change at or after the end time (within padding)
+  let bestEnd: SceneChange | null = null;
+  let bestEndDist = Infinity;
+
+  for (const sc of sceneChanges) {
+    // Scene change should be at or after the end time, but within padding
+    if (sc.timestamp >= endTime && (sc.timestamp - endTime) <= paddingSeconds) {
+      const dist = sc.timestamp - endTime;
+      if (dist < bestEndDist) {
+        bestEndDist = dist;
+        bestEnd = sc;
+      }
+    }
+  }
+
+  // Apply adjustments if found
+  if (bestStart) {
+    adjustedStart = bestStart.timestamp;
+  }
+
+  if (bestEnd) {
+    adjustedEnd = bestEnd.timestamp;
+  }
+
+  // Ensure we don't create a zero-length or negative clip
+  if (adjustedEnd <= adjustedStart) {
+    return { startTime, endTime };
+  }
+
+  // Log if adjustments were made
+  if (adjustedStart !== startTime || adjustedEnd !== endTime) {
+    console.log(
+      `[Clip Extractor] Scene-aware boundary adjustment: ` +
+      `${startTime.toFixed(1)}s→${adjustedStart.toFixed(1)}s, ` +
+      `${endTime.toFixed(1)}s→${adjustedEnd.toFixed(1)}s`
+    );
+  }
+
+  return { startTime: adjustedStart, endTime: adjustedEnd };
 }
 
 // ---- Main Clip Extraction Function ----
