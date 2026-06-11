@@ -1,6 +1,7 @@
 // ============================================
 // StreamZ - Core Type Definitions
 // ============================================
+// Phase 1 + Phase 3: Added analytics types
 
 // ---- Enums / Literal Unions ----
 
@@ -155,4 +156,99 @@ export interface ApiResponse<T = unknown> {
   data?: T;
   error?: string;
   message?: string;
+}
+
+// ============================================
+// Phase 3: Analytics Types
+// ============================================
+
+/** Per-platform metrics aggregated over a time period */
+export interface PlatformMetrics {
+  platform: TargetPlatform;
+  totalViews: number;
+  totalLikes: number;
+  totalComments: number;
+  totalShares: number;
+  averageEngagementRate: number;
+  averageWatchTime: number;
+  averageRetention: number;
+  subscriberGrowth: number;
+  contentCount: number;
+  period: '7d' | '30d' | '90d';
+}
+
+/** Individual content piece performance */
+export interface ContentPerformance {
+  contentId: string;
+  title: string;
+  platform: TargetPlatform;
+  publishedAt: Date;
+  views: number;
+  likes: number;
+  comments: number;
+  shares: number;
+  engagementRate: number;
+  watchTime: number;
+  retentionPercent: number;
+  /** A/B test variant ID if applicable */
+  variantId?: string;
+}
+
+/** Overall analytics overview for the dashboard */
+export interface AnalyticsOverview {
+  totalViews: number;
+  totalViewsGrowth: number;
+  averageEngagementRate: number;
+  engagementGrowth: number;
+  subscriberGrowth: number;
+  subscriberGrowthPercent: number;
+  totalComments: number;
+  commentsGrowth: number;
+  platformMetrics: PlatformMetrics[];
+  topContent: ContentPerformance[];
+  /** Best posting times by platform */
+  bestPostingTimes: BestPostingTime[];
+  /** Date range of the data */
+  period: '7d' | '30d' | '90d';
+  /** Time series data for charts */
+  viewsTimeSeries: TimeSeriesPoint[];
+  engagementTimeSeries: TimeSeriesPoint[];
+}
+
+/** Best posting time recommendation */
+export interface BestPostingTime {
+  platform: TargetPlatform;
+  hour: number; // 0-23 in EST
+  dayOfWeek?: number; // 0-6, 0=Sunday
+  score: number; // 0-100, higher is better
+  averageViews: number;
+  sampleSize: number;
+}
+
+/** Time series data point for charts */
+export interface TimeSeriesPoint {
+  date: string; // ISO date string
+  value: number;
+  platform?: TargetPlatform;
+}
+
+/** A/B test variant performance tracking */
+export interface PromptVariantPerformance {
+  variantId: string;
+  variantName: string;
+  impressions: number;
+  averageViews: number;
+  averageEngagement: number;
+  winRate: number;
+  confidence: number; // Statistical confidence (0-1)
+}
+
+/** Analytics feedback for optimizer (Phase 3) */
+export interface OptimizerFeedback {
+  platform: TargetPlatform;
+  topHashtags: string[];
+  averageEngagementByHour: Record<number, number>;
+  bestPerformingVariant?: string;
+  worstPerformingVariant?: string;
+  recommendedModifications: string[];
 }
