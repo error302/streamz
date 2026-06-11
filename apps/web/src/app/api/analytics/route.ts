@@ -1,73 +1,48 @@
-// ============================================
-// StreamZ - Analytics API Route
-// ============================================
+import { NextResponse } from 'next/server';
+import { auth } from '@clerk/nextjs/server';
 
-import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs';
-import sql from '@/lib/db';
+export async function GET() {
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-// ---- GET /api/analytics ----
-export async function GET(request: NextRequest) {
   try {
-    const { userId } = auth();
-    if (!userId) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { sql } = await import('@streamz/db');
 
-    const searchParams = request.nextUrl.searchParams;
-    const platform = searchParams.get('platform');
-
-    // Get analytics summary from database
-    let analytics;
-    if (platform) {
-      analytics = await sql`
-        SELECT a.*, pq.platform, ac.title
+    const [summaryRes, byPlatformRes, recentRes] = await Promise.all([
+      sql`
+        SELECT
+          COALESCE(SUM(views), 0) as total_views,
+          COALESCE(AVG(click_through_rate), 0) as engagement_rate,
+          COUNT(DISTINCT pq.id) as total_published,
+          COALESCE(AVG(audience_retention_percent), 0) as avg_retention
+        FROM analytics a
+        JOIN publish_queue pq ON a.publish_queue_id = pq.id
+        WHERE pq.status = 'published'
+      `,
+      sql`
+        SELECT platform, SUM(views) as views, SUM(likes) as likes, SUM(comments) as comments
+        FROM analytics
+        GROUP BY platform
+        ORDER BY views DESC
+      `,
+      sql`
+        SELECT a.platform, a.views, a.likes, a.comments, a.shares, a.audience_retention_percent,
+               ac.title, a.pulled_at
         FROM analytics a
         JOIN publish_queue pq ON a.publish_queue_id = pq.id
         JOIN ai_content ac ON pq.ai_content_id = ac.id
-        WHERE a.platform = ${platform}::target_platform
         ORDER BY a.pulled_at DESC
-        LIMIT 100
-      `;
-    } else {
-      analytics = await sql`
-        SELECT a.*, pq.platform, ac.title
-        FROM analytics a
-        JOIN publish_queue pq ON a.publish_queue_id = pq.id
-        JOIN ai_content ac ON pq.ai_content_id = ac.id
-        ORDER BY a.pulled_at DESC
-        LIMIT 100
-      `;
-    }
-
-    type AnalyticsRow = Record<string, unknown>;
-    const rows = analytics as AnalyticsRow[];
-
-    // Compute summary stats
-    const summary = rows.length > 0
-      ? {
-          totalViews: rows.reduce((sum: number, a) => sum + (a.views as number || 0), 0),
-          totalLikes: rows.reduce((sum: number, a) => sum + (a.likes as number || 0), 0),
-          totalComments: rows.reduce((sum: number, a) => sum + (a.comments as number || 0), 0),
-          totalShares: rows.reduce((sum: number, a) => sum + (a.shares as number || 0), 0),
-          avgEngagementRate: rows.reduce((sum: number, a) => sum + (a.click_through_rate as number || 0), 0) / rows.length,
-          avgRetention: rows.reduce((sum: number, a) => sum + (a.audience_retention_percent as number || 0), 0) / rows.length,
-          publishedCount: rows.length,
-        }
-      : null;
+        LIMIT 20
+      `,
+    ]);
 
     return NextResponse.json({
-      success: true,
-      data: {
-        summary,
-        analytics: rows,
-      },
+      summary: summaryRes[0] || { total_views: 0, engagement_rate: 0, total_published: 0, avg_retention: 0 },
+      byPlatform: byPlatformRes,
+      recent: recentRes,
     });
-  } catch (error) {
-    console.error('[API /analytics] Error:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch analytics' },
-      { status: 500 }
-    );
+  } catch (err) {
+    console.error('[Analytics API] Error:', err);
+    return NextResponse.json({ summary: { total_views: 0, engagement_rate: 0, total_published: 0, avg_retention: 0 }, byPlatform: [], recent: [] });
   }
 }
