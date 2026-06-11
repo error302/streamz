@@ -12,7 +12,7 @@ import type { Job } from 'bullmq';
 import type { CaptureJobPayload } from '@streamz/shared';
 import { R2_PATHS, RETRY_CONFIG } from '@streamz/shared';
 import { uploadFile } from './storage.js';
-import { createNetSocket } from 'net';
+import { createConnection, type Socket } from 'net';
 
 interface CaptureResult {
   vodR2Key: string;
@@ -29,7 +29,7 @@ interface StreamMetadata {
 // ---- Twitch IRC Chat Logger ----
 // Connects to Twitch IRC as an anonymous user and logs chat messages
 class TwitchChatLogger {
-  private socket: ReturnType<typeof createNetSocket> | null = null;
+  private socket: Socket | null = null;
   private chatLogPath: string;
   private writeStream: ReturnType<typeof createWriteStream> | null = null;
   private channelName: string;
@@ -45,11 +45,10 @@ class TwitchChatLogger {
     return new Promise((resolve, reject) => {
       this.writeStream = createWriteStream(this.chatLogPath, { flags: 'a' });
 
-      this.socket = createNetSocket();
       const ircServer = process.env.TWITCH_IRC_SERVER || 'irc.chat.twitch.tv';
       const ircPort = parseInt(process.env.TWITCH_IRC_PORT || '6667', 10);
 
-      this.socket.connect(ircPort, ircServer, () => {
+      this.socket = createConnection({ host: ircServer, port: ircPort }, () => {
         // Anonymous login to Twitch IRC
         const anonName = `justinfan${Math.floor(Math.random() * 90000 + 10000)}`;
         this.socket!.write(`PASS SCHMOOPIIE\r\n`);
@@ -337,9 +336,10 @@ export async function captureTwitch(
     await job.updateProgress(60);
 
     // ---- Step 4: Stop Chat Logging ----
-    if (chatLogger) {
-      await chatLogger.disconnect();
-      const chatMsgCount = chatLogger.getMessageCount();
+    const logger = chatLogger as TwitchChatLogger | null;
+    if (logger) {
+      await logger.disconnect();
+      const chatMsgCount = logger.getMessageCount();
       console.log(`[Twitch Capture] Chat logging stopped. ${chatMsgCount} messages captured.`);
     }
 
@@ -437,7 +437,7 @@ export async function captureTwitch(
   } catch (error) {
     // Cleanup on error
     if (chatLogger) {
-      try { await chatLogger.disconnect(); } catch { /* ignore */ }
+      try { await (chatLogger as TwitchChatLogger).disconnect(); } catch { /* ignore */ }
     }
 
     // Kill any running yt-dlp process

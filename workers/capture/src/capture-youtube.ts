@@ -256,7 +256,22 @@ function convertYouTubeChatToText(jsonContent: string): string {
   try {
     // YouTube live chat JSON format from yt-dlp
     // It can be an array of events or JSONL format
-    let events: Array<{ replayChatItemAction?: { actions?: Array<{ addChatItemAction?: { item?: { liveChatTextMessageRenderer?: { authorName?: { simpleText?: string }; message?: { runs?: Array<{ text?: string }> }; timestampUsec?: string } } } } } }>;
+    interface YTChatEvent {
+      replayChatItemAction?: {
+        actions?: Array<{
+          addChatItemAction?: {
+            item?: {
+              liveChatTextMessageRenderer?: {
+                authorName?: { simpleText?: string };
+                message?: { runs?: Array<{ text?: string }> };
+                timestampUsec?: string;
+              };
+            };
+          };
+        }>;
+      };
+    }
+    let events: YTChatEvent[];
 
     try {
       events = JSON.parse(jsonContent);

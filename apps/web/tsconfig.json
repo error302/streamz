@@ -21,7 +21,10 @@
     "paths": {
       "@/*": ["./src/*"],
       "@streamz/shared": ["../../packages/shared/src"],
-      "@streamz/db": ["../../packages/db/src"]
+      "@streamz/shared/*": ["../../packages/shared/src/*"],
+      "@streamz/db": ["../../packages/db/src"],
+      "@streamz/storage": ["../../packages/storage/src"],
+      "@streamz/ai": ["../../packages/ai/src"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],

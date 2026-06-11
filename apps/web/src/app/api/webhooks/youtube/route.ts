@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { QUEUES, RETRY_CONFIG } from '@streamz/shared';
-import { redisConnection } from '@/lib/redis';
+import { getQueue } from '@streamz/shared';
 import sql from '@/lib/db';
 
 // ---- YouTube Push Notification Handler ----
@@ -11,11 +11,16 @@ import sql from '@/lib/db';
 
 const YOUTUBE_WEBHOOK_SECRET = process.env.YOUTUBE_WEBHOOK_SECRET || '';
 
-// ---- HMAC Signature Verification ----
+// ---- HMAC Signature Verification (timing-safe) ----
 function verifyYouTubeSignature(body: string, signature: string): boolean {
+  // SECURITY: If secret is missing in production, fail closed
   if (!YOUTUBE_WEBHOOK_SECRET) {
-    console.warn('[YouTube Webhook] YOUTUBE_WEBHOOK_SECRET not set, skipping signature verification');
-    return true; // Allow in development
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[YouTube Webhook] YOUTUBE_WEBHOOK_SECRET not set in production — REJECTING');
+      return false;
+    }
+    console.warn('[YouTube Webhook] YOUTUBE_WEBHOOK_SECRET not set, skipping signature verification (dev only)');
+    return true;
   }
 
   // YouTube uses HMAC-SHA1 for push notifications
@@ -23,8 +28,16 @@ function verifyYouTubeSignature(body: string, signature: string): boolean {
     .update(body)
     .digest('hex');
 
+  // Use timingSafeEqual for constant-time comparison (prevents timing attacks)
   try {
-    return signature === expectedSig;
+    const sigBuffer = Buffer.from(signature, 'utf-8');
+    const expectedBuffer = Buffer.from(expectedSig, 'utf-8');
+
+    if (sigBuffer.length !== expectedBuffer.length) {
+      return false;
+    }
+
+    return timingSafeEqual(sigBuffer, expectedBuffer);
   } catch {
     return false;
   }
@@ -110,7 +123,7 @@ async function checkIfLiveStream(videoId: string): Promise<{
 
   try {
     const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,liveStreamingDetails&id=${videoId}&key=${apiKey}`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
 
     if (!response.ok) {
       console.warn(`[YouTube Webhook] YouTube API error: ${response.status}`);
@@ -172,6 +185,15 @@ export async function GET(request: NextRequest) {
 // ---- POST: Push Notification ----
 export async function POST(request: NextRequest) {
   try {
+    // SECURITY: If secret is missing in production, return 500
+    if (!YOUTUBE_WEBHOOK_SECRET && process.env.NODE_ENV === 'production') {
+      console.error('[YouTube Webhook] YOUTUBE_WEBHOOK_SECRET not set in production');
+      return NextResponse.json(
+        { error: 'Webhook not configured' },
+        { status: 500 }
+      );
+    }
+
     const rawBody = await request.text();
 
     console.log('[YouTube Webhook] Received push notification');
@@ -179,15 +201,19 @@ export async function POST(request: NextRequest) {
     // ---- Verify Signature ----
     const signature = request.headers.get('x-hub-signature');
 
-    if (signature && YOUTUBE_WEBHOOK_SECRET) {
+    // SECURITY: Reject missing signature header with 403
+    if (!signature) {
+      if (YOUTUBE_WEBHOOK_SECRET) {
+        console.warn('[YouTube Webhook] Missing signature header — REJECTING');
+        return NextResponse.json({ error: 'Missing signature' }, { status: 403 });
+      }
+      // If no secret configured (dev only), allow through
+    } else if (YOUTUBE_WEBHOOK_SECRET) {
       if (!verifyYouTubeSignature(rawBody, signature)) {
         console.warn('[YouTube Webhook] Signature verification failed');
         return NextResponse.json({ error: 'Invalid signature' }, { status: 403 });
       }
       console.log('[YouTube Webhook] Signature verified');
-    } else if (YOUTUBE_WEBHOOK_SECRET && !signature) {
-      console.warn('[YouTube Webhook] Missing signature header');
-      // Don't reject in development, just warn
     }
 
     // ---- Parse Atom Feed ----
@@ -217,64 +243,57 @@ export async function POST(request: NextRequest) {
 
         console.log(`[YouTube Webhook] Live stream detected: ${entry.videoId}`);
 
-        // ---- Create stream record in database ----
+        // ---- Transaction: Create stream record + update status atomically ----
         const streamTitle = liveInfo.title || entry.title || 'Untitled Stream';
 
-        const [stream] = await sql`
-          INSERT INTO streams (platform, platform_stream_id, title, game_category, started_at, status)
-          VALUES (
-            'youtube'::platform_type,
-            ${entry.videoId},
-            ${streamTitle},
-            NULL,
-            ${entry.publishedAt ? new Date(entry.publishedAt) : new Date()}::timestamptz,
-            'detected'::stream_status
-          )
-          ON CONFLICT (platform, platform_stream_id) DO UPDATE SET
-            title = ${streamTitle},
-            status = 'detected'::stream_status,
-            started_at = ${entry.publishedAt ? new Date(entry.publishedAt) : new Date()}::timestamptz
-          RETURNING *
-        `;
+        await sql.begin(async (tx) => {
+          const [stream] = await tx`
+            INSERT INTO streams (platform, platform_stream_id, title, game_category, started_at, status)
+            VALUES (
+              'youtube'::platform_type,
+              ${entry.videoId},
+              ${streamTitle},
+              NULL,
+              ${entry.publishedAt ? new Date(entry.publishedAt) : new Date()}::timestamptz,
+              'capturing'::stream_status
+            )
+            ON CONFLICT (platform, platform_stream_id) DO UPDATE SET
+              title = ${streamTitle},
+              status = 'capturing'::stream_status,
+              started_at = ${entry.publishedAt ? new Date(entry.publishedAt) : new Date()}::timestamptz
+            RETURNING *
+          `;
 
-        if (!stream) {
-          console.error('[YouTube Webhook] Failed to create stream record');
-          continue;
-        }
-
-        console.log(`[YouTube Webhook] Created stream record: ${stream.id}`);
-
-        // ---- Update status to 'capturing' and enqueue capture job ----
-        await sql`
-          UPDATE streams SET status = 'capturing'::stream_status WHERE id = ${stream.id}
-        `;
-
-        const { Queue } = await import('bullmq');
-        const captureQueue = new Queue(QUEUES.CAPTURE, { connection: redisConnection });
-
-        const captureJob = await captureQueue.add(
-          'capture-youtube',
-          {
-            streamId: stream.id,
-            platform: 'youtube',
-            platformStreamId: entry.videoId,
-            channelName: entry.channelId || entry.author,
-            startedAt: entry.publishedAt || new Date().toISOString(),
-          },
-          {
-            attempts: RETRY_CONFIG.MAX_RETRIES,
-            backoff: { type: 'exponential', delay: RETRY_CONFIG.BACKOFF_BASE_MS },
-            removeOnComplete: { count: 100 },
-            removeOnFail: { count: 50 },
+          if (!stream) {
+            throw new Error('Failed to create stream record');
           }
-        );
 
-        console.log(
-          `[YouTube Webhook] Capture job queued: ${captureJob.id} for stream ${stream.id}`
-        );
+          console.log(`[YouTube Webhook] Created stream record: ${stream.id}`);
 
-        // Close the queue connection
-        await captureQueue.close();
+          // Enqueue capture job
+          const captureQueue = getQueue(QUEUES.CAPTURE);
+
+          const captureJob = await captureQueue.add(
+            'capture-youtube',
+            {
+              streamId: stream.id,
+              platform: 'youtube',
+              platformStreamId: entry.videoId,
+              channelName: entry.channelId || entry.author,
+              startedAt: entry.publishedAt || new Date().toISOString(),
+            },
+            {
+              attempts: RETRY_CONFIG.MAX_RETRIES,
+              backoff: { type: 'exponential', delay: RETRY_CONFIG.BACKOFF_BASE_MS },
+              removeOnComplete: { count: 100 },
+              removeOnFail: { count: 50 },
+            }
+          );
+
+          console.log(
+            `[YouTube Webhook] Capture job queued: ${captureJob.id} for stream ${stream.id}`
+          );
+        });
       } catch (entryErr) {
         console.error(
           `[YouTube Webhook] Error processing entry ${entry.videoId}:`,

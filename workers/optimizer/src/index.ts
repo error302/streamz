@@ -5,8 +5,9 @@
 // Generates platform-specific titles, descriptions, tags, and hashtags
 // using Claude AI via OpenRouter.
 
-import { Worker, Job, Queue } from 'bullmq';
-import { QUEUES, type OptimizeJobPayload, OptimizeJobPayloadSchema, AI_CONFIG } from '@streamz/shared';
+import { Worker, Job } from 'bullmq';
+import { QUEUES, type OptimizeJobPayload, OptimizeJobPayloadSchema, AI_CONFIG, getQueue } from '@streamz/shared';
+import { generateCompletion } from '@streamz/ai';
 import { getYoutubeVODPrompt } from './prompts/youtube-vod.js';
 import { getYoutubeShortsPrompt } from './prompts/youtube-shorts.js';
 import { getInstagramPrompt } from './prompts/instagram.js';
@@ -19,41 +20,6 @@ const redisConfig = {
   password: process.env.REDIS_PASSWORD || undefined,
   maxRetriesPerRequest: null,
 };
-
-// ---- AI Completion via OpenRouter ----
-async function generateCompletion(systemPrompt: string, userPrompt: string): Promise<string> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error('OPENROUTER_API_KEY environment variable is required');
-  }
-
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://streamz.app',
-      'X-Title': 'StreamZ Optimizer',
-    },
-    body: JSON.stringify({
-      model: AI_CONFIG.DEFAULT_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      max_tokens: AI_CONFIG.MAX_TOKENS,
-      temperature: AI_CONFIG.TEMPERATURE,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`OpenRouter API error: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  return data.choices[0]?.message?.content ?? '';
-}
 
 // ---- Job Processor ----
 async function processOptimizeJob(job: Job<OptimizeJobPayload>) {
@@ -70,7 +36,7 @@ async function processOptimizeJob(job: Job<OptimizeJobPayload>) {
   }
 
   const payload = parsed.data;
-  const publishQueue = new Queue(QUEUES.PUBLISH, { connection: redisConfig });
+  const publishQueue = getQueue(QUEUES.PUBLISH);
 
   try {
     // Process each target platform
@@ -90,7 +56,8 @@ async function processOptimizeJob(job: Job<OptimizeJobPayload>) {
       );
 
       // Generate AI content
-      const aiResponse = await generateCompletion(systemPrompt, userPrompt);
+      const aiResult = await generateCompletion(systemPrompt, userPrompt);
+      const aiResponse = aiResult.content;
 
       // Parse AI response
       let content;

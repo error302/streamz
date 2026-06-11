@@ -13,7 +13,7 @@ import { join } from 'path';
 import type { Job } from 'bullmq';
 import type { HighlightJobPayload, ClipType } from '@streamz/shared';
 import { R2_PATHS, CLIP_DURATION, PLATFORM_SPECS } from '@streamz/shared';
-import { uploadFile, downloadFileToPath } from './storage.js';
+import { uploadFile, downloadToPath as downloadFileToPath } from './storage.js';
 
 // ---- Types ----
 
@@ -318,7 +318,6 @@ export async function extractClips(
       // Clean up clip temp files (but keep the source VOD for other clips)
       try {
         if (existsSync(landscapeClipPath)) await unlink(landscapeClipPath);
-        if (existsSync(verticalClipPath)) await unlink(verticalClipPath);
       } catch { /* ignore */ }
     } catch (error) {
       console.error(`[Clip Extractor] Failed to extract clip ${i + 1}:`, error);

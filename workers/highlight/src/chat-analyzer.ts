@@ -15,7 +15,7 @@
 import type { Job } from 'bullmq';
 import type { HighlightJobPayload } from '@streamz/shared';
 import { HIGHLIGHT_THRESHOLDS } from '@streamz/shared';
-import { downloadFile } from './storage.js';
+import { downloadFile as downloadFileStream } from './storage.js';
 
 // ---- Types ----
 
@@ -55,8 +55,13 @@ async function loadChatLog(chatLogR2Key: string): Promise<ChatMessage[]> {
   console.log(`[Chat Analyzer] Loading chat log from: ${chatLogR2Key}`);
 
   try {
-    const chatBuffer = await downloadFile(chatLogR2Key);
-    const content = chatBuffer.toString('utf-8');
+    const chatStream = await downloadFileStream(chatLogR2Key);
+    // Collect stream into string for parsing
+    const chunks: Buffer[] = [];
+    for await (const chunk of chatStream) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    const content = Buffer.concat(chunks).toString('utf-8');
     const lines = content.split('\n').filter((line) => line.trim());
 
     const messages: ChatMessage[] = [];

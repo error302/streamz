@@ -5,7 +5,7 @@
 // Publishes content to YouTube, Instagram, and TikTok.
 
 import { Worker, Job } from 'bullmq';
-import { QUEUES, type PublishJobPayload, PublishJobPayloadSchema, RETRY_CONFIG } from '@streamz/shared';
+import { QUEUES, type PublishJobPayload, PublishJobPayloadSchema, RETRY_CONFIG, createRedisConnection, getQueue } from '@streamz/shared';
 import { publishToYouTube } from './youtube.js';
 import { publishToInstagram } from './instagram.js';
 import { publishToTikTok } from './tiktok.js';
@@ -97,10 +97,6 @@ const worker = new Worker<PublishJobPayload>(
     limiter: {
       max: 5,
       duration: 60000, // 5 publishes per minute to respect API limits
-    },
-    settings: {
-      maxStalledCount: 1, // Max times a job can be stalled before failing
-      stalledInterval: 30000, // Check for stalled jobs every 30 seconds
     },
   }
 );

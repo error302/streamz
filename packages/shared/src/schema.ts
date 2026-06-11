@@ -165,6 +165,40 @@ export const YouTubePushNotificationSchema = z.object({
     .optional(),
 });
 
+// ---- API Query Parameter Schemas ----
+
+export const LimitQueryParamSchema = z.coerce.number().int().min(1).max(100).default(50);
+
+export const StreamsQuerySchema = z.object({
+  platform: PlatformSchema.optional(),
+  status: StreamStatusSchema.optional(),
+  limit: LimitQueryParamSchema,
+});
+
+export const HighlightsQuerySchema = z.object({
+  streamId: z.string().uuid().optional(),
+  limit: LimitQueryParamSchema,
+});
+
+export const QueueQuerySchema = z.object({
+  status: PublishStatusSchema.optional(),
+  limit: LimitQueryParamSchema,
+});
+
+export const ContentApproveBodySchema = z.object({
+  title: z.string().min(1).max(500),
+  description: z.string().min(1).max(5000),
+  tags: z.array(z.string()).max(50),
+  hashtags: z.array(z.string()).max(30),
+});
+
+// ---- Inferred Types for API Schemas ----
+
+export type StreamsQueryInput = z.infer<typeof StreamsQuerySchema>;
+export type HighlightsQueryInput = z.infer<typeof HighlightsQuerySchema>;
+export type QueueQueryInput = z.infer<typeof QueueQuerySchema>;
+export type ContentApproveBodyInput = z.infer<typeof ContentApproveBodySchema>;
+
 // ---- Inferred Types ----
 
 export type StreamInput = z.infer<typeof StreamSchema>;

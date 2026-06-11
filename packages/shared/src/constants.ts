@@ -5,14 +5,8 @@
 import type { Platform, StreamStatus, ClipType, TargetPlatform, ReviewStatus, PublishStatus } from './types.js';
 
 // ---- BullMQ Queue Names ----
-export const QUEUES = {
-  CAPTURE: 'streamz:capture',
-  HIGHLIGHT: 'streamz:highlight',
-  OPTIMIZE: 'streamz:optimize',
-  PUBLISH: 'streamz:publish',
-} as const;
-
-export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
+// NOTE: QUEUES and QueueName are now defined in ./queue.ts
+// They are re-exported from the main index for backward compatibility.
 
 // ---- Platform Constants ----
 export const PLATFORMS: Platform[] = ['twitch', 'youtube'];

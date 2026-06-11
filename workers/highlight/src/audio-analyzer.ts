@@ -19,7 +19,7 @@ import { join } from 'path';
 import type { Job } from 'bullmq';
 import type { HighlightJobPayload } from '@streamz/shared';
 import { HIGHLIGHT_THRESHOLDS } from '@streamz/shared';
-import { downloadFileToPath } from './storage.js';
+import { downloadToPath as downloadFileToPath } from './storage.js';
 
 // ---- Types ----
 

@@ -6,13 +6,15 @@
 // Uses yt-dlp for VOD download and IRC logging for Twitch chat.
 // After capture, enqueues highlight detection jobs.
 
-import { Worker, Job, Queue } from 'bullmq';
+import { Worker, Job } from 'bullmq';
 import {
   QUEUES,
   RETRY_CONFIG,
   R2_PATHS,
   type CaptureJobPayload,
   CaptureJobPayloadSchema,
+  createRedisConnection,
+  getQueue,
 } from '@streamz/shared';
 import { sql, updateStreamStatus, findStreamById } from '@streamz/db';
 import { captureTwitch, shutdownCapture as shutdownTwitchCapture } from './capture-twitch.js';
@@ -27,7 +29,7 @@ const redisConfig = {
 };
 
 // ---- Highlight Queue ----
-const highlightQueue = new Queue(QUEUES.HIGHLIGHT, { connection: redisConfig });
+const highlightQueue = getQueue(QUEUES.HIGHLIGHT);
 
 // ---- Job Processor ----
 async function processCaptureJob(job: Job<CaptureJobPayload>) {
@@ -154,10 +156,6 @@ const worker = new Worker<CaptureJobPayload>(
     limiter: {
       max: 1,
       duration: 5000, // 1 job per 5 seconds to avoid rate limits
-    },
-    settings: {
-      maxStalledCount: 2, // Max times a job can be stalled before failing
-      stalledInterval: 60000, // Check for stalled jobs every 60s
     },
   }
 );

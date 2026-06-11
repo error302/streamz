@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { QUEUES, RETRY_CONFIG } from '@streamz/shared';
-import { redisConnection } from '@/lib/redis';
+import { getQueue } from '@streamz/shared';
 import sql from '@/lib/db';
 
 // ---- Twitch EventSub Webhook Handler ----
@@ -11,16 +11,21 @@ import sql from '@/lib/db';
 
 const TWITCH_EVENTSUB_SECRET = process.env.TWITCH_EVENTSUB_SECRET || '';
 
-// ---- HMAC Signature Verification ----
+// ---- HMAC Signature Verification (timing-safe) ----
 function verifyTwitchSignature(
   messageId: string,
   timestamp: string,
   body: string,
   signature: string
 ): boolean {
+  // SECURITY: If secret is missing in production, fail closed
   if (!TWITCH_EVENTSUB_SECRET) {
-    console.warn('[Twitch Webhook] TWITCH_EVENTSUB_SECRET not set, skipping signature verification');
-    return true; // Allow in development
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[Twitch Webhook] TWITCH_EVENTSUB_SECRET not set in production — REJECTING');
+      return false;
+    }
+    console.warn('[Twitch Webhook] TWITCH_EVENTSUB_SECRET not set, skipping signature verification (dev only)');
+    return true;
   }
 
   // Twitch uses HMAC-SHA256 with the message ID + timestamp + body as the message
@@ -30,8 +35,8 @@ function verifyTwitchSignature(
     .update(message)
     .digest('hex');
 
+  // Use timingSafeEqual for constant-time comparison (prevents timing attacks)
   try {
-    // Use timing-safe comparison to prevent timing attacks
     const sigBuffer = Buffer.from(signature, 'utf-8');
     const expectedBuffer = Buffer.from(expectedSig, 'utf-8');
 
@@ -39,16 +44,9 @@ function verifyTwitchSignature(
       return false;
     }
 
-    return createHmac('sha256', 'dummy') // Just for the timing-safe compare
-      .update(sigBuffer)
-      .digest()
-      .equals(
-        createHmac('sha256', 'dummy')
-          .update(expectedBuffer)
-          .digest()
-      ) && signature === expectedSig; // Direct comparison as fallback
+    return timingSafeEqual(sigBuffer, expectedBuffer);
   } catch {
-    return signature === expectedSig;
+    return false;
   }
 }
 
@@ -64,9 +62,13 @@ export async function GET(request: NextRequest) {
     const timestamp = request.headers.get('twitch-eventsub-message-timestamp') ?? '';
     const signature = request.headers.get('twitch-eventsub-message-signature') ?? '';
 
-    // Verify the signature for security
-    // Note: For GET requests, the body is empty
-    if (signature && !verifyTwitchSignature(messageId, timestamp, '', signature)) {
+    // SECURITY: Reject missing signature header with 403
+    if (!signature) {
+      console.warn('[Twitch Webhook] Challenge verification: missing signature header');
+      return NextResponse.json({ error: 'Missing signature' }, { status: 403 });
+    }
+
+    if (!verifyTwitchSignature(messageId, timestamp, '', signature)) {
       console.warn('[Twitch Webhook] Challenge verification failed: invalid signature');
       return NextResponse.json({ error: 'Invalid signature' }, { status: 403 });
     }
@@ -91,6 +93,15 @@ export async function GET(request: NextRequest) {
 // ---- POST: Event Notification ----
 export async function POST(request: NextRequest) {
   try {
+    // SECURITY: If secret is missing in production, return 500
+    if (!TWITCH_EVENTSUB_SECRET && process.env.NODE_ENV === 'production') {
+      console.error('[Twitch Webhook] TWITCH_EVENTSUB_SECRET not set in production');
+      return NextResponse.json(
+        { error: 'Webhook not configured' },
+        { status: 500 }
+      );
+    }
+
     const rawBody = await request.text();
     const messageType = request.headers.get('twitch-eventsub-message-type');
 
@@ -100,6 +111,12 @@ export async function POST(request: NextRequest) {
     const messageId = request.headers.get('twitch-eventsub-message-id') ?? '';
     const timestamp = request.headers.get('twitch-eventsub-message-timestamp') ?? '';
     const signature = request.headers.get('twitch-eventsub-message-signature') ?? '';
+
+    // SECURITY: Reject missing signature header with 403
+    if (!signature) {
+      console.warn('[Twitch Webhook] Missing signature header — REJECTING');
+      return NextResponse.json({ error: 'Missing signature' }, { status: 403 });
+    }
 
     if (!verifyTwitchSignature(messageId, timestamp, rawBody, signature)) {
       console.warn('[Twitch Webhook] Notification verification failed: invalid signature');
@@ -148,61 +165,54 @@ export async function POST(request: NextRequest) {
             );
 
             try {
-              // ---- Create stream record in database ----
-              const [stream] = await sql`
-                INSERT INTO streams (platform, platform_stream_id, title, game_category, started_at, status)
-                VALUES (
-                  'twitch'::platform_type,
-                  ${event.id},
-                  ${`Stream by ${event.broadcaster_user_name}`},
-                  NULL,
-                  ${event.started_at ? new Date(event.started_at) : new Date()}::timestamptz,
-                  'detected'::stream_status
-                )
-                ON CONFLICT (platform, platform_stream_id) DO UPDATE SET
-                  status = 'detected'::stream_status,
-                  started_at = ${event.started_at ? new Date(event.started_at) : new Date()}::timestamptz
-                RETURNING *
-              `;
+              // ---- Transaction: Create stream record + update status atomically ----
+              await sql.begin(async (tx) => {
+                const [stream] = await tx`
+                  INSERT INTO streams (platform, platform_stream_id, title, game_category, started_at, status)
+                  VALUES (
+                    'twitch'::platform_type,
+                    ${event.id},
+                    ${`Stream by ${event.broadcaster_user_name}`},
+                    NULL,
+                    ${event.started_at ? new Date(event.started_at) : new Date()}::timestamptz,
+                    'capturing'::stream_status
+                  )
+                  ON CONFLICT (platform, platform_stream_id) DO UPDATE SET
+                    status = 'capturing'::stream_status,
+                    started_at = ${event.started_at ? new Date(event.started_at) : new Date()}::timestamptz
+                  RETURNING *
+                `;
 
-              if (!stream) {
-                console.error('[Twitch Webhook] Failed to create stream record');
-                break;
-              }
-
-              console.log(`[Twitch Webhook] Created stream record: ${stream.id}`);
-
-              // ---- Update status to 'capturing' and enqueue capture job ----
-              await sql`
-                UPDATE streams SET status = 'capturing'::stream_status WHERE id = ${stream.id}
-              `;
-
-              const { Queue } = await import('bullmq');
-              const captureQueue = new Queue(QUEUES.CAPTURE, { connection: redisConnection });
-
-              const captureJob = await captureQueue.add(
-                'capture-twitch',
-                {
-                  streamId: stream.id,
-                  platform: 'twitch',
-                  platformStreamId: event.id,
-                  channelName: event.broadcaster_user_login,
-                  startedAt: event.started_at || new Date().toISOString(),
-                },
-                {
-                  attempts: RETRY_CONFIG.MAX_RETRIES,
-                  backoff: { type: 'exponential', delay: RETRY_CONFIG.BACKOFF_BASE_MS },
-                  removeOnComplete: { count: 100 },
-                  removeOnFail: { count: 50 },
+                if (!stream) {
+                  throw new Error('Failed to create stream record');
                 }
-              );
 
-              console.log(
-                `[Twitch Webhook] Capture job queued: ${captureJob.id} for stream ${stream.id}`
-              );
+                console.log(`[Twitch Webhook] Created stream record: ${stream.id}`);
 
-              // Close the queue connection (don't need it hanging around in a serverless function)
-              await captureQueue.close();
+                // Enqueue capture job
+                const captureQueue = getQueue(QUEUES.CAPTURE);
+
+                const captureJob = await captureQueue.add(
+                  'capture-twitch',
+                  {
+                    streamId: stream.id,
+                    platform: 'twitch',
+                    platformStreamId: event.id,
+                    channelName: event.broadcaster_user_login,
+                    startedAt: event.started_at || new Date().toISOString(),
+                  },
+                  {
+                    attempts: RETRY_CONFIG.MAX_RETRIES,
+                    backoff: { type: 'exponential', delay: RETRY_CONFIG.BACKOFF_BASE_MS },
+                    removeOnComplete: { count: 100 },
+                    removeOnFail: { count: 50 },
+                  }
+                );
+
+                console.log(
+                  `[Twitch Webhook] Capture job queued: ${captureJob.id} for stream ${stream.id}`
+                );
+              });
             } catch (dbErr) {
               console.error('[Twitch Webhook] Database error creating stream:', dbErr);
             }
@@ -271,8 +281,8 @@ export async function POST(request: NextRequest) {
               try {
                 await sql`
                   UPDATE streams
-                  SET title = COALESCE(${event.title}, title),
-                      game_category = COALESCE(${event.category_name}, game_category)
+                  SET title = COALESCE(${event.title ?? null}, title),
+                      game_category = COALESCE(${event.category_name ?? null}, game_category)
                   WHERE platform = 'twitch'::platform_type
                   AND status IN ('detected'::stream_status, 'capturing'::stream_status)
                   ORDER BY started_at DESC

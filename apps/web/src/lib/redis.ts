@@ -1,30 +1,12 @@
 // ============================================
-// StreamZ - Redis / BullMQ Connection
+// StreamZ - Redis / BullMQ Connection (Web App)
 // ============================================
+// Re-exports from @streamz/shared, plus a direct Redis client for caching/pub-sub.
 
-import { Redis } from 'ioredis';
+import { createRedisConnection, getRedisConfig } from '@streamz/shared';
 
-// Create a reusable Redis connection for BullMQ
-export const redisConnection = {
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  password: process.env.REDIS_PASSWORD || undefined,
-  maxRetriesPerRequest: null, // Required by BullMQ
-};
+// Re-export shared queue utilities
+export { createRedisConnection, getRedisConfig, getQueue, QUEUES } from '@streamz/shared';
 
-// Direct Redis client for caching / pub-sub
-export const redis = new Redis({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  password: process.env.REDIS_PASSWORD || undefined,
-  maxRetriesPerRequest: 3,
-  retryStrategy: (times) => Math.min(times * 200, 5000),
-});
-
-redis.on('error', (err) => {
-  console.error('[Redis] Connection error:', err);
-});
-
-redis.on('connect', () => {
-  console.log('[Redis] Connected');
-});
+// BullMQ-compatible connection config (re-exported for backward compat)
+export const redisConnection = getRedisConfig();

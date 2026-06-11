@@ -9,24 +9,26 @@
   }
 
   * {
-    @apply border-surface-300;
+    border-color: theme(--color-slate-700);
   }
 
   body {
-    @apply bg-surface text-white;
+    background-color: rgb(var(--background));
+    color: rgb(var(--foreground));
   }
 }
 
 @layer utilities {
-  .text-gradient {
-    @apply bg-clip-text text-transparent bg-gradient-to-r from-brand-400 via-brand-500 to-accent-twitch;
+  .scrollbar-thin {
+    scrollbar-width: thin;
   }
-
   .glass {
-    @apply bg-surface-100/60 backdrop-blur-xl border border-surface-300/50;
+    @apply bg-white/5 backdrop-blur-lg border border-white/10;
   }
-
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-pink-500 to-purple-500;
+  }
   .glow-brand {
-    box-shadow: 0 0 20px rgba(236, 72, 153, 0.15), 0 0 60px rgba(236, 72, 153, 0.05);
+    box-shadow: 0 0 20px rgba(236, 72, 153, 0.3);
   }
 }

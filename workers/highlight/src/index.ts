@@ -14,7 +14,7 @@
 // 9. Enqueues optimize jobs for each highlight
 // 10. Updates stream status to 'processed'
 
-import { Worker, Job, Queue } from 'bullmq';
+import { Worker, Job } from 'bullmq';
 import {
   QUEUES,
   RETRY_CONFIG,
@@ -24,6 +24,8 @@ import {
   HighlightJobPayloadSchema,
   type ClipType,
   type TargetPlatform,
+  createRedisConnection,
+  getQueue,
 } from '@streamz/shared';
 import { sql, updateStreamStatus, findStreamById, insertHighlight } from '@streamz/db';
 import { analyzeChat, type ChatSpike } from './chat-analyzer.js';
@@ -39,7 +41,7 @@ const redisConfig = {
 };
 
 // ---- Optimize Queue ----
-const optimizeQueue = new Queue(QUEUES.OPTIMIZE, { connection: redisConfig });
+const optimizeQueue = getQueue(QUEUES.OPTIMIZE);
 
 // ---- Weighting Constants ----
 const CHAT_WEIGHT = 0.6;
@@ -373,10 +375,6 @@ const worker = new Worker<HighlightJobPayload>(
   {
     connection: redisConfig,
     concurrency: 1, // Process one highlight job at a time (CPU-intensive FFmpeg operations)
-    settings: {
-      maxStalledCount: 2,
-      stalledInterval: 120000, // Check for stalled jobs every 120s (longer due to FFmpeg)
-    },
   }
 );
 

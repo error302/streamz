@@ -9,7 +9,11 @@
     ".": "./src/index.ts",
     "./types": "./src/types.ts",
     "./constants": "./src/constants.ts",
-    "./schema": "./src/schema.ts"
+    "./schema": "./src/schema.ts",
+    "./queue": "./src/queue.ts",
+    "./publisher-errors": "./src/publisher-errors.ts",
+    "./logger": "./src/logger.ts",
+    "./health-server": "./src/health-server.ts"
   },
   "scripts": {
     "build": "tsc",
@@ -17,9 +21,14 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "ioredis": "^5.4.0",
+    "bullmq": "^5.30.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
+  },
+  "overrides": {
+    "ioredis": "^5.4.0"
   }
 }
